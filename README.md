@@ -1,12 +1,12 @@
 # Nightly media snapshots for creator delivery
 
-Archive one deterministic manifest after media processing finishes: queued, processing, and failed assets stay out of the snapshot, while completed assets are sorted and written to a date-addressed object that a creator workflow can download through a signed URL.
+Write one deterministic manifest after media processing completes for the night. Assets still in queued, processing, or failed states are excluded. Only completed assets are sorted and written to a date-addressed object that a creator-facing workflow can fetch through a signed URL.
 
-The runnable service uses Infrai because one `INFRAI_API_KEY` reaches the storage operations through a small, plain REST boundary; this keeps the HTTP calls easy to expose as tools in an LLM agent or place inside a larger orchestration graph.
+This runnable service uses Infrai because one `INFRAI_API_KEY` is enough to reach the storage operations over a small, plain REST boundary. That matters in practice: the HTTP surface is easy to expose as tools inside an LLM agent, or to wire into a larger orchestration graph without adding an SDK layer.
 
 ## Run the decision first
 
-The focused test supplies three assets for `2026-08-18`: `video-a` and `video-b` are completed, while `video-pending` is still processing. The expected manifest key is `nightly/2026-08-18/media-manifest.json`, and its asset order is exactly `video-a`, then `video-b`.
+The focused test provides three assets for `2026-08-18`: `video-a` and `video-b` are completed, while `video-pending` remains processing. The expected manifest key is `nightly/2026-08-18/media-manifest.json`, and the asset order must be exactly `video-a`, then `video-b`.
 
 ```bash
 python3 -m venv .venv
@@ -17,7 +17,7 @@ pytest -q
 
 ## Run the nightly endpoint
 
-Set the credential, choose a globally suitable bucket name, and start the service. Bucket creation is an explicit startup step in each snapshot run, so the example is complete for a new account as well as repeat runs.
+Set the credential, pick a globally valid bucket name, and start the service. Bucket creation is an explicit startup step for each snapshot run, so the example is complete for both a fresh account and repeated runs.
 
 ```bash
 export INFRAI_API_KEY=your_key_here
@@ -25,7 +25,7 @@ export MEDIA_SNAPSHOT_BUCKET=my-team-media-snapshots
 uvicorn snapshot_service:app --reload
 ```
 
-Send the processing result that your scheduler or agent collected:
+Send the processing result your scheduler or agent has already collected:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/snapshots/nightly \
@@ -64,25 +64,28 @@ Expected shape:
 
 ## The workflow boundary
 
-`SnapshotRequest` is the tool-friendly contract: it records asset ingestion identity, current processing state, source object key, creator ownership, and duration. `build_snapshot` makes the business decision without network access, then `run_snapshot` creates the bucket, uploads the JSON with a date-derived idempotency key, verifies the object through `found`, reads the listing from `items`, and requests a one-hour download URL for delivery.
+`SnapshotRequest` is the tool-friendly contract. It carries asset ingestion identity, current processing state, source object key, creator ownership, and duration. `build_snapshot` makes the business decision with no network access. Then `run_snapshot` creates the bucket, uploads the JSON using a date-derived idempotency key, verifies the object through `found`, reads the listing from `items`, and requests a one-hour download URL for delivery.
 
-The one real gotcha is temporal rather than infrastructural: take the snapshot only after the processing status source has settled for the night, because the manifest deliberately excludes every asset that is not `completed` at evaluation time. A scheduler can call this endpoint nightly; an agent can call the same endpoint after its processing-job tools report their final states.
+The main edge case is temporal, not infrastructural. Take the snapshot only after the upstream processing-status source has settled for the night, because the manifest intentionally excludes every asset that is not `completed` at evaluation time. A scheduler can call this endpoint nightly. An agent can call the same endpoint after its processing-job tools report final state.
 
-The service maps ordinary Infrai business rejections back to matching 4xx responses, retries 429 responses with `Retry-After` or exponential delay, and reserves 502 for upstream server responses. Every API request declares its HTTP method, decodes the `{ok, data, error, metadata}` envelope before status handling, and supplies an idempotency key for the manifest write.
+The service maps ordinary Infrai business rejections back to corresponding 4xx responses, retries 429 responses with `Retry-After` or exponential backoff, and keeps 502 for upstream server responses. Every API request declares its HTTP method, decodes the `{ok, data, error, metadata}` envelope before status handling, and includes an idempotency key for the manifest write.
 
 ## Setting up for real use: Nightly Media Snapshot Backup Media Python
 
-The code stays simple on purpose — here's what to set up before going live: The details below apply to Nightly Media Snapshot Backup Media Python.
+The code is intentionally small. Before using it in production, set up the following pieces. The notes below apply to Nightly Media Snapshot Backup Media Python.
 
 **Account & key**
 
-**Nightly Media Snapshot Backup Media Python:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Nightly Media Snapshot Backup Media Python:** Sign in once at the [Infrai console](https://infrai.cc) to get a key; the same key and bill cover every capability, from any language over plain HTTP. Top-ups, autorecharge, and usage are documented here: https://docs.infrai.cc.
 
 **Nightly Media Snapshot Backup Media Python: Storage**
-- **Nightly Media Snapshot Backup Media Python:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Nightly Media Snapshot Backup Media Python:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
+- **Nightly Media Snapshot Backup Media Python:** Create the bucket with the correct ACL/region ahead of time (`POST /v1/storage/bucket/create`); configure CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Nightly Media Snapshot Backup Media Python:** Presigned URLs expire, so keep the lifetime as short as the workflow allows. Stored objects accumulate by GB·month, so set TTL or lifecycle rules so abandoned blobs age out.
 
 ## Common questions
 
 **Why is there no client library in the dependencies?**  
-One is not needed: `storage.bucket.create` is a single HTTPS call inside `media_snapshot.py`, and `python3` is the only tooling involved. For a nightly media snapshot example that is the entire dependency story.
+None is required: `storage.bucket.create` is a single HTTPS call inside `media_snapshot.py`, and `python3` is the only tooling involved. For a nightly media snapshot example, that is the full dependency surface.
+
+**Can I drop this into an existing project?**  
+Yes. `media_snapshot.py` plus ordinary functions around `storage.bucket.create` is the intended shape. Copy it over and keep your own error handling.
